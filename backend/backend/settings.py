@@ -229,4 +229,5 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-GROQ_API_KEY = open("../../secret.txt").read()
+# GROQ_API_KEY = open("../../secret.txt").read()
+GROQ_API_KEY = ""
