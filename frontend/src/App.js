@@ -5,9 +5,12 @@ import Toolbar from './components/Toolbar';
 import WhiteboardCanvas from './components/WhiteboardCanvas';
 import WhiteboardWebSocket from './services/websocket';
 import { createSession, exportPDF } from './services/api';
-import './App.css';
 import { API_BASE } from './services/api';
+import './App.css';
 
+// ----------------------------------------------------------------------
+// Home component
+// ----------------------------------------------------------------------
 function Home() {
   const [error, setError] = useState(null);
   const createNewBoard = async () => {
@@ -30,6 +33,9 @@ function Home() {
   );
 }
 
+// ----------------------------------------------------------------------
+// Whiteboard component
+// ----------------------------------------------------------------------
 function Whiteboard() {
   const { roomId } = useParams();
   const [elements, setElements] = useState([]);
@@ -40,41 +46,45 @@ function Whiteboard() {
   const [isErasing, setIsErasing] = useState(false);
   const wsRef = useRef(null);
 
+  // Zoom and pan
   const [scale, setScale] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const lastMouseCoordsRef = useRef({ x: 400, y: 300 });
 
+  // Text editing (inline)
   const [editingText, setEditingText] = useState(null);
 
+  // LaTeX modal
   const [latexResult, setLatexResult] = useState(null);
 
-  // --- Состояния для плавного перетаскивания ---
-  const [draggedElement, setDraggedElement] = useState(null);   // перетаскиваемый элемент
+  // Drag & drop for any element
+  const [draggedElement, setDraggedElement] = useState(null);
   const [dragStartPos, setDragStartPos] = useState({ x: 0, y: 0 });
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
 
+  // Selection and resizing for images
+  const [selectedElementId, setSelectedElementId] = useState(null);
+  const [resizingElement, setResizingElement] = useState(null);
+
+  // Colors and thickness refs (for real‑time use in event handlers)
   const colorRef = useRef(color);
   const thicknessRef = useRef(thickness);
   useEffect(() => { colorRef.current = color; }, [color]);
   useEffect(() => { thicknessRef.current = thickness; }, [thickness]);
 
-
-  // --- Обработка вставки изображений из буфера обмена ---
+  // --------------------------------------------------------------------
+  // Paste image from clipboard
+  // --------------------------------------------------------------------
   const [lastMousePos, setLastMousePos] = useState({ x: 400, y: 300 });
-
-  // Сохраняем последнюю позицию мыши (для размещения вставленного изображения)
   useEffect(() => {
     const handleMouseMoveGlobal = (e) => {
-      // Получаем позицию относительно canvas (преобразуем логические координаты)
       const canvas = document.querySelector('canvas');
       if (canvas) {
         const rect = canvas.getBoundingClientRect();
         const scaleX = canvas.width / 800;
         const scaleY = canvas.height / 600;
-        const physicalX = e.clientX - rect.left;
-        const physicalY = e.clientY - rect.top;
-        const logicalX = physicalX / scaleX;
-        const logicalY = physicalY / scaleY;
+        const logicalX = (e.clientX - rect.left) / scaleX;
+        const logicalY = (e.clientY - rect.top) / scaleY;
         setLastMousePos({ x: logicalX, y: logicalY });
       }
     };
@@ -85,40 +95,34 @@ function Whiteboard() {
   const handlePaste = async (e) => {
     const items = e.clipboardData?.items;
     if (!items) return;
-
     for (const item of items) {
       if (item.type.indexOf('image') !== -1) {
         const file = item.getAsFile();
         if (!file) continue;
-
         const reader = new FileReader();
         reader.onload = (event) => {
           const dataUrl = event.target.result;
-          // Создаём элемент изображения на доске
-          const imgElement = {
-            type: 'image',
-            id: Date.now() + Math.random(),
-            dataUrl: dataUrl,          // base64
-            x: lastMousePos.x,
-            y: lastMousePos.y,
-            width: 200,                // начальная ширина (можно задать любую)
-            height: 200,               // будет скорректировано при отрисовке с сохранением пропорций
-          };
-          // Для сохранения пропорций при вставке можно загрузить изображение и вычислить реальные размеры
           const tempImg = new Image();
           tempImg.onload = () => {
             const aspect = tempImg.width / tempImg.height;
             const targetWidth = 200;
             const targetHeight = targetWidth / aspect;
-            imgElement.width = targetWidth;
-            imgElement.height = targetHeight;
-            setElements(prev => [...prev, imgElement]);
-            sendElement(imgElement);
+            const newImage = {
+              type: 'image',
+              id: Date.now() + Math.random(),
+              dataUrl,
+              x: lastMousePos.x,
+              y: lastMousePos.y,
+              width: targetWidth,
+              height: targetHeight,
+            };
+            setElements(prev => [...prev, newImage]);
+            sendElement(newImage);
           };
           tempImg.src = dataUrl;
         };
         reader.readAsDataURL(file);
-        break; // берём только первое изображение
+        break;
       }
     }
   };
@@ -128,17 +132,9 @@ function Whiteboard() {
     return () => window.removeEventListener('paste', handlePaste);
   }, [lastMousePos]);
 
-
-
-  if (!roomId || roomId === 'undefined' || roomId.length !== 36) {
-    return (
-      <div>
-        <h2>Неверный идентификатор доски</h2>
-        <a href="/">Вернуться на главную</a>
-      </div>
-    );
-  }
-
+  // --------------------------------------------------------------------
+  // WebSocket connection and helpers
+  // --------------------------------------------------------------------
   useEffect(() => {
     const ws = new WhiteboardWebSocket(roomId, (data) => {
       if (data.type === 'init') setElements(data.data || []);
@@ -161,6 +157,7 @@ function Whiteboard() {
     setElements([]);
     wsRef.current?.send({ type: 'clear' });
   };
+
   const handleSave = () => {
     const canvas = document.querySelector('canvas');
     const link = document.createElement('a');
@@ -168,36 +165,90 @@ function Whiteboard() {
     link.href = canvas.toDataURL();
     link.click();
   };
+
   const handleExportPDF = () => exportPDF(roomId);
 
+  // --------------------------------------------------------------------
+  // LaTeX generation via Groq API (using elements, not image)
+  // --------------------------------------------------------------------
   const handleLatex = async () => {
-  try {
-    const canvas = document.querySelector('canvas');
-        if (!canvas) {
-          alert('Холст не найден');
-          return;
+    try {
+      // Build description of all elements (same as before)
+      const descriptionLines = [];
+      for (let idx = 0; idx < elements.length; idx++) {
+        const el = elements[idx];
+        const typ = el.type;
+        const color = el.color || 'black';
+        const thick = el.thickness || 1;
+        const fill = el.fillColor || null;
+        if (typ === 'text') {
+          descriptionLines.push(`Text ${idx}: "${el.text}" at (${el.x},${el.y}), color=${color}, font size=${el.fontSize || 16}`);
+        } else if (typ === 'rectangle') {
+          let line = `Rectangle ${idx}: top-left (${el.x},${el.y}), width=${el.width}, height=${el.height}, stroke=${color}, thickness=${thick}`;
+          if (fill) line += `, fill=${fill}`;
+          descriptionLines.push(line);
+        } else if (typ === 'circle') {
+          let line = `Ellipse ${idx}: center (${el.cx},${el.cy}), rx=${el.rx}, ry=${el.ry}, stroke=${color}, thickness=${thick}`;
+          if (fill) line += `, fill=${fill}`;
+          descriptionLines.push(line);
+        } else if (typ === 'line') {
+          descriptionLines.push(`Line ${idx}: (${el.x1},${el.y1}) to (${el.x2},${el.y2}), stroke=${color}, thickness=${thick}`);
+        } else if (typ === 'arrow') {
+          descriptionLines.push(`Arrow ${idx}: (${el.x1},${el.y1}) to (${el.x2},${el.y2}), stroke=${color}, thickness=${thick}`);
+        } else if (typ === 'triangle') {
+          let line = `Triangle ${idx}: vertices (${el.x1},${el.y1}), (${el.x2},${el.y1}), (${el.x1},${el.y2}), stroke=${color}, thickness=${thick}`;
+          if (fill) line += `, fill=${fill}`;
+          descriptionLines.push(line);
+        } else if (typ === 'pencil') {
+          const points = el.points || [];
+          if (points.length) {
+            const first = points[0];
+            const last = points[points.length-1];
+            descriptionLines.push(`Pencil drawing ${idx}: approx from (${first.x},${first.y}) to (${last.x},${last.y}), ${points.length} points, stroke=${color}, thickness=${thick}`);
+          }
+        } else if (typ === 'image') {
+          descriptionLines.push(`Image ${idx}: at (${el.x},${el.y}), size ${el.width}x${el.height}`);
         }
-        const imageData = canvas.toDataURL('image/png');
-
-        const response = await fetch(`${API_BASE}/whiteboards/${roomId}/convert_to_latex/`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ image: imageData })
-        });
-        const data = await response.json();
-        if (data.latex && data.latex.trim()) {
-          setLatexResult(data.latex);
-        } else if (data.error) {
-          alert('Ошибка: ' + data.error);
-        } else {
-          alert('Текст не распознан. Нарисуйте более крупные и чёткие буквы.');
-        }
-      } catch (err) {
-        console.error(err);
-        alert('Ошибка при запросе к серверу');
       }
-    };
-  // Геометрические функции
+      const description = descriptionLines.length ? "The board contains:\n" + descriptionLines.join("\n") : "The board is empty.";
+      const prompt = `You are an expert in LaTeX and TikZ. Generate a complete LaTeX document that accurately reproduces the whiteboard described below.
+
+${description}
+
+Requirements:
+- Use \\documentclass{article} and include the tikz package.
+- Place all drawings inside a single tikzpicture environment.
+- Use absolute coordinates (x,y) in points (pt), with the canvas ranging from (0,0) to (800,600).
+- For lines, use \\draw or \\draw[->] for arrows. For filled shapes, use \\filldraw.
+- For pencil drawings, approximate the shape (e.g., a simple curve).
+- Output ONLY the LaTeX code, starting with \\documentclass. Do not add any extra text.
+
+Example format:
+\\documentclass{article}
+\\usepackage{tikz}
+\\begin{document}
+\\begin{tikzpicture}[x=1pt,y=1pt,yscale=-1]
+  % commands
+\\end{tikzpicture}
+\\end{document}`;
+
+      const response = await fetch(`${API_BASE}/whiteboards/${roomId}/convert_to_latex/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt })
+      });
+      const data = await response.json();
+      if (data.latex) setLatexResult(data.latex);
+      else alert('Ошибка: ' + (data.error || 'Неизвестная ошибка'));
+    } catch (err) {
+      console.error(err);
+      alert('Ошибка при запросе к серверу');
+    }
+  };
+
+  // --------------------------------------------------------------------
+  // Geometry helpers (selection, eraser, fill)
+  // --------------------------------------------------------------------
   const distanceToSegment = (x, y, x1, y1, x2, y2) => {
     const dx = x2 - x1;
     const dy = y2 - y1;
@@ -238,8 +289,7 @@ function Whiteboard() {
             if (Math.hypot(point.x - x, point.y - y) < 10) return i;
           }
           break;
-        case 'line':
-        case 'arrow':
+        case 'line': case 'arrow':
           if (distanceToSegment(x, y, el.x1, el.y1, el.x2, el.y2) < 10) return i;
           break;
         case 'triangle':
@@ -253,13 +303,14 @@ function Whiteboard() {
           const rx = el.rx || 0, ry = el.ry || 0;
           if (Math.abs(dx) <= rx && Math.abs(dy) <= ry) return i;
           break;
-        case 'text':
+        case 'text': {
           const textWidth = (el.text?.length * 12) || 80;
           const textHeight = 24;
-          if (x >= el.x - 10 && x <= el.x + textWidth + 10 &&
-              y >= el.y - textHeight && y <= el.y + 10) {
-            return i;
-          }
+          if (x >= el.x - 10 && x <= el.x + textWidth + 10 && y >= el.y - textHeight && y <= el.y + 10) return i;
+          break;
+        }
+        case 'image':
+          if (x >= el.x && x <= el.x + el.width && y >= el.y && y <= el.y + el.height) return i;
           break;
         default: break;
       }
@@ -267,16 +318,16 @@ function Whiteboard() {
     return -1;
   };
 
-  // Вспомогательная функция для обновления координат фигуры
+  // --------------------------------------------------------------------
+  // Element position update for drag
+  // --------------------------------------------------------------------
   const updateElementPosition = (element, deltaX, deltaY) => {
     const updated = { ...element };
     switch (element.type) {
       case 'pencil':
         updated.points = element.points.map(p => ({ x: p.x + deltaX, y: p.y + deltaY }));
         break;
-      case 'line':
-      case 'arrow':
-      case 'triangle':
+      case 'line': case 'arrow': case 'triangle':
         updated.x1 = element.x1 + deltaX;
         updated.y1 = element.y1 + deltaY;
         updated.x2 = element.x2 + deltaX;
@@ -294,71 +345,107 @@ function Whiteboard() {
         updated.x = element.x + deltaX;
         updated.y = element.y + deltaY;
         break;
-      default:
-        return null;
+      case 'image':
+        updated.x = element.x + deltaX;
+        updated.y = element.y + deltaY;
+        break;
+      default: return null;
     }
     return updated;
   };
 
-  // Обработчики мыши
+  // --------------------------------------------------------------------
+  // Mouse event handlers (drawing, selection, resize, etc.)
+  // --------------------------------------------------------------------
   const handleMouseDown = (e) => {
     if (editingText) return;
     const { offsetX, offsetY } = e;
 
-    // Инструмент "Курсор" (выделение и перетаскивание)
+    // --- Select tool (cursor) ---
     if (tool === 'select') {
-      const index = findElementIndexAt(offsetX, offsetY);
-      if (index !== -1) {
-        const element = elements[index];
-        setDraggedElement(element);
-        setDragStartPos({ x: offsetX, y: offsetY });
-        setDragOffset({ x: 0, y: 0 });
-        e.preventDefault();
-      } else {
-        setDraggedElement(null);
+      // Check if we are over a resize handle of a selected image
+      let resizing = false;
+      if (selectedElementId) {
+        const selectedEl = elements.find(el => el.id === selectedElementId);
+        if (selectedEl && selectedEl.type === 'image') {
+          const markerSize = 10;
+          const corners = [
+            { x: selectedEl.x, y: selectedEl.y, corner: 'tl' },
+            { x: selectedEl.x + selectedEl.width, y: selectedEl.y, corner: 'tr' },
+            { x: selectedEl.x, y: selectedEl.y + selectedEl.height, corner: 'bl' },
+            { x: selectedEl.x + selectedEl.width, y: selectedEl.y + selectedEl.height, corner: 'br' }
+          ];
+          for (const c of corners) {
+            if (Math.hypot(offsetX - c.x, offsetY - c.y) < markerSize) {
+              setResizingElement({
+                element: selectedEl,
+                startX: offsetX,
+                startY: offsetY,
+                originalWidth: selectedEl.width,
+                originalHeight: selectedEl.height,
+                corner: c.corner,
+              });
+              resizing = true;
+              break;
+            }
+          }
+        }
       }
-      return;
-    }
-
-    if (tool === 'fill') {
-      const index = findElementIndexAt(offsetX, offsetY);
-      if (index !== -1) {
-        const target = elements[index];
-        if (target) {
-          const updated = { ...target, fillColor: colorRef.current };
-          setElements(prev => prev.map((el, idx) => idx === index ? updated : el));
-          sendUpdate(updated);
+      if (!resizing) {
+        const index = findElementIndexAt(offsetX, offsetY);
+        if (index !== -1) {
+          const element = elements[index];
+          setSelectedElementId(element.id);
+          setDraggedElement(element);
+          setDragStartPos({ x: offsetX, y: offsetY });
+          setDragOffset({ x: 0, y: 0 });
+          e.preventDefault();
+        } else {
+          setSelectedElementId(null);
+          setDraggedElement(null);
         }
       }
       return;
     }
-    console.log('handleMouseDown, tool:', tool, 'editingText:', editingText);
+
+    // --- Fill tool ---
+    if (tool === 'fill') {
+      const index = findElementIndexAt(offsetX, offsetY);
+      if (index !== -1) {
+        const target = elements[index];
+        const updated = { ...target, fillColor: colorRef.current };
+        setElements(prev => prev.map((el, idx) => idx === index ? updated : el));
+        sendUpdate(updated);
+      }
+      return;
+    }
+
+    // --- Text tool (inline) ---
     if (tool === 'text') {
-      console.log('Text tool triggered, offsetX:', offsetX, 'offsetY:', offsetY, 'clientX:', e.clientX, 'clientY:', e.clientY);
       setEditingText({
-        x: offsetX,          // логические координаты для сохранения в элементе
+        x: offsetX,
         y: offsetY,
         value: '',
         existingId: null,
-        clientX: e.clientX,  // экранные координаты для позиционирования input
-        clientY: e.clientY - 16,  // немного выше курсора
+        clientX: e.clientX,
+        clientY: e.clientY - 16,
       });
       return;
     }
-    console.log(editingText)
+
+    // --- Eraser tool ---
     if (tool === 'eraser') {
       setIsErasing(true);
       const index = findElementIndexAt(offsetX, offsetY);
       if (index !== -1) {
         const deleted = elements[index];
-        if (deleted) {
-          setElements(prev => prev.filter((_, idx) => idx !== index));
-          if (wsRef.current) wsRef.current.send({ type: 'delete', elementId: deleted.id });
-        }
+        setElements(prev => prev.filter((_, idx) => idx !== index));
+        if (deleted) wsRef.current?.send({ type: 'delete', elementId: deleted.id });
       }
       return;
     }
 
+    // --- Drawing tools (pencil, line, shapes) ---
     const baseElement = {
       type: tool,
       color: colorRef.current,
@@ -381,27 +468,54 @@ function Whiteboard() {
     const { offsetX, offsetY } = e;
     lastMouseCoordsRef.current = { x: offsetX, y: offsetY };
 
-    // Плавное перетаскивание выбранного элемента
-    if (tool === 'select' && draggedElement) {
-      const deltaX = offsetX - dragStartPos.x;
-      const deltaY = offsetY - dragStartPos.y;
-      setDragOffset({ x: deltaX, y: deltaY });
-      // НЕ обновляем elements и НЕ отправляем на сервер
-      return;
+    // Select tool: resize or drag
+    if (tool === 'select') {
+      if (resizingElement) {
+        const deltaX = offsetX - resizingElement.startX;
+        const deltaY = offsetY - resizingElement.startY;
+        let newWidth = resizingElement.originalWidth;
+        let newHeight = resizingElement.originalHeight;
+        if (resizingElement.corner === 'br') {
+          newWidth = resizingElement.originalWidth + deltaX;
+          newHeight = resizingElement.originalHeight + deltaY;
+        } else if (resizingElement.corner === 'tl') {
+          newWidth = resizingElement.originalWidth - deltaX;
+          newHeight = resizingElement.originalHeight - deltaY;
+        }
+        // Add other corners if needed
+        newWidth = Math.max(20, newWidth);
+        newHeight = Math.max(20, newHeight);
+        const updated = { ...resizingElement.element, width: newWidth, height: newHeight };
+        setElements(prev => prev.map(el => el.id === updated.id ? updated : el));
+        sendUpdate(updated);
+        setResizingElement(prev => ({
+          ...prev,
+          startX: offsetX,
+          startY: offsetY,
+          originalWidth: newWidth,
+          originalHeight: newHeight,
+        }));
+        return;
+      } else if (draggedElement) {
+        const deltaX = offsetX - dragStartPos.x;
+        const deltaY = offsetY - dragStartPos.y;
+        setDragOffset({ x: deltaX, y: deltaY });
+        return;
+      }
     }
 
+    // Eraser while moving
     if (tool === 'eraser' && isErasing) {
       const index = findElementIndexAt(offsetX, offsetY);
       if (index !== -1) {
         const deleted = elements[index];
-        if (deleted) {
-          setElements(prev => prev.filter((_, idx) => idx !== index));
-          if (wsRef.current) wsRef.current.send({ type: 'delete', elementId: deleted.id });
-        }
+        setElements(prev => prev.filter((_, idx) => idx !== index));
+        if (deleted) wsRef.current?.send({ type: 'delete', elementId: deleted.id });
       }
       return;
     }
 
+    // Drawing preview
     if (!previewElement) return;
     if (tool === 'pencil') {
       setPreviewElement(prev => ({ ...prev, points: [...prev.points, { x: offsetX, y: offsetY }] }));
@@ -416,15 +530,18 @@ function Whiteboard() {
 
   const handleMouseUp = () => {
     if (editingText) return;
-    if (tool === 'select' && draggedElement) {
-      // Применяем окончательное смещение и отправляем на сервер
-      const moved = updateElementPosition(draggedElement, dragOffset.x, dragOffset.y);
-      if (moved) {
-        setElements(prev => prev.map(el => el.id === moved.id ? moved : el));
-        sendUpdate(moved);
+    if (tool === 'select') {
+      if (resizingElement) {
+        setResizingElement(null);
+      } else if (draggedElement) {
+        const moved = updateElementPosition(draggedElement, dragOffset.x, dragOffset.y);
+        if (moved) {
+          setElements(prev => prev.map(el => el.id === moved.id ? moved : el));
+          sendUpdate(moved);
+        }
+        setDraggedElement(null);
+        setDragOffset({ x: 0, y: 0 });
       }
-      setDraggedElement(null);
-      setDragOffset({ x: 0, y: 0 });
       return;
     }
     if (tool === 'eraser') {
@@ -438,32 +555,22 @@ function Whiteboard() {
     }
   };
 
-  const handleDoubleClick = (e) => {
-    const { offsetX, offsetY } = e;
-    const index = findElementIndexAt(offsetX, offsetY);
-    if (index !== -1) {
-      const textElement = elements[index];
-      if (textElement && textElement.type === 'text') {
-        const canvas = e.target;
-        const rect = canvas.getBoundingClientRect();
-        setEditingText({
-          x: textElement.x,
-          y: textElement.y,
-          value: textElement.text,
-          existingId: textElement.id,
-          clientX: rect.left + textElement.x * (rect.width / 800),
-          clientY: rect.top + textElement.y * (rect.height / 600) - 16,
-        });
-      }
-    }
-  };
-
+  // --------------------------------------------------------------------
+  // Text editing helpers
+  // --------------------------------------------------------------------
   const finishTextEditing = () => {
     if (!editingText) return;
     const { x, y, value, existingId } = editingText;
     if (value.trim()) {
       if (existingId === null) {
-        const newText = { type: 'text', x, y, text: value, color: colorRef.current, fontSize: 16, id: Date.now() + Math.random() };
+        const newText = {
+          type: 'text',
+          x, y,
+          text: value,
+          color: colorRef.current,
+          fontSize: 16,
+          id: Date.now() + Math.random(),
+        };
         setElements(prev => [...prev, newText]);
         sendElement(newText);
       } else {
@@ -480,6 +587,9 @@ function Whiteboard() {
     else if (e.key === 'Escape') setEditingText(null);
   };
 
+  // --------------------------------------------------------------------
+  // Zoom & pan
+  // --------------------------------------------------------------------
   const zoomRelativeToPoint = (deltaScale, pointX, pointY) => {
     let newScale = scale + deltaScale;
     newScale = Math.min(3, Math.max(0.3, newScale));
@@ -494,6 +604,37 @@ function Whiteboard() {
   const handleZoomOut = () => zoomRelativeToPoint(-0.1, lastMouseCoordsRef.current.x, lastMouseCoordsRef.current.y);
   const handleZoomReset = () => { setScale(1); setPan({ x: 0, y: 0 }); };
   const handleWheel = (e, logicalX, logicalY) => zoomRelativeToPoint(e.deltaY > 0 ? -0.1 : 0.1, logicalX, logicalY);
+
+  // --------------------------------------------------------------------
+  // Double click to edit text
+  // --------------------------------------------------------------------
+  const handleDoubleClick = (e) => {
+    const { offsetX, offsetY } = e;
+    const index = findElementIndexAt(offsetX, offsetY);
+    if (index !== -1 && elements[index].type === 'text') {
+      const textElement = elements[index];
+      setEditingText({
+        x: textElement.x,
+        y: textElement.y,
+        value: textElement.text,
+        existingId: textElement.id,
+        clientX: e.clientX,
+        clientY: e.clientY - 16,
+      });
+    }
+  };
+
+  // --------------------------------------------------------------------
+  // Render
+  // --------------------------------------------------------------------
+  if (!roomId || roomId === 'undefined' || roomId.length !== 36) {
+    return (
+      <div>
+        <h2>Неверный идентификатор доски</h2>
+        <a href="/">Вернуться на главную</a>
+      </div>
+    );
+  }
 
   return (
     <div className="App">
@@ -525,6 +666,7 @@ function Whiteboard() {
           onWheel={handleWheel}
           draggedElement={draggedElement}
           dragOffset={dragOffset}
+          selectedElementId={selectedElementId}
         />
         {editingText && (
           <input
@@ -579,6 +721,9 @@ function Whiteboard() {
   );
 }
 
+// ----------------------------------------------------------------------
+// App component with routing
+// ----------------------------------------------------------------------
 function App() {
   return (
     <Router>

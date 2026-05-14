@@ -1,4 +1,3 @@
-// frontend/src/components/WhiteboardCanvas.js
 import React, { useRef, useEffect, useCallback, useState } from 'react';
 
 const WhiteboardCanvas = ({
@@ -13,10 +12,10 @@ const WhiteboardCanvas = ({
   onWheel,
   draggedElement,
   dragOffset,
+  selectedElementId,
 }) => {
   const canvasRef = useRef(null);
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
-  // Кеш для загруженных изображений (чтобы не создавать каждый раз)
   const imageCache = useRef({});
 
   const updateCanvasSize = useCallback(() => {
@@ -60,6 +59,34 @@ const WhiteboardCanvas = ({
       drawElement(ctx, draggedElement);
       ctx.restore();
     }
+
+    // Draw selection rectangle and resize handles for selected image
+    if (selectedElementId) {
+      const selected = elements.find(el => el.id === selectedElementId);
+      if (selected && selected.type === 'image') {
+        ctx.save();
+        ctx.strokeStyle = '#2b6eff';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 6]);
+        ctx.strokeRect(selected.x, selected.y, selected.width, selected.height);
+        ctx.setLineDash([]);
+        const markerSize = 8;
+        const corners = [
+          [selected.x, selected.y],
+          [selected.x + selected.width, selected.y],
+          [selected.x, selected.y + selected.height],
+          [selected.x + selected.width, selected.y + selected.height],
+        ];
+        ctx.fillStyle = '#ffffff';
+        ctx.shadowBlur = 0;
+        for (const [x, y] of corners) {
+          ctx.fillRect(x - markerSize/2, y - markerSize/2, markerSize, markerSize);
+          ctx.strokeRect(x - markerSize/2, y - markerSize/2, markerSize, markerSize);
+        }
+        ctx.restore();
+      }
+    }
+
     ctx.restore();
   };
 
@@ -129,22 +156,21 @@ const WhiteboardCanvas = ({
         ctx.fillStyle = el.color;
         ctx.fillText(el.text, el.x, el.y);
         break;
-      case 'image':
+      case 'image': {
         let img = imageCache.current[el.id];
         if (!img) {
           img = new Image();
           img.src = el.dataUrl;
           imageCache.current[el.id] = img;
         }
-        // Рисуем, если изображение загружено, иначе ожидаем загрузки
         if (img.complete && img.naturalWidth > 0) {
           ctx.drawImage(img, el.x, el.y, el.width, el.height);
         } else {
           img.onload = () => drawCanvas();
         }
         break;
-      default:
-        break;
+      }
+      default: break;
     }
   };
 
@@ -192,7 +218,9 @@ const WhiteboardCanvas = ({
     return () => canvas.removeEventListener('wheel', wheelHandler);
   }, [onWheel]);
 
-  useEffect(() => { drawCanvas(); }, [elements, previewElement, scale, pan, dimensions, draggedElement, dragOffset]);
+  useEffect(() => {
+    drawCanvas();
+  }, [elements, previewElement, scale, pan, dimensions, draggedElement, dragOffset, selectedElementId]);
 
   return (
     <canvas
