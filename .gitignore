@@ -46,3 +46,4 @@ __pycache__/
 .DS_Store
 Thumbs.db
 17.txt
+*.txt
