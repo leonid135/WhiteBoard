@@ -58,6 +58,78 @@ function Whiteboard() {
   useEffect(() => { colorRef.current = color; }, [color]);
   useEffect(() => { thicknessRef.current = thickness; }, [thickness]);
 
+
+  // --- Обработка вставки изображений из буфера обмена ---
+  const [lastMousePos, setLastMousePos] = useState({ x: 400, y: 300 });
+
+  // Сохраняем последнюю позицию мыши (для размещения вставленного изображения)
+  useEffect(() => {
+    const handleMouseMoveGlobal = (e) => {
+      // Получаем позицию относительно canvas (преобразуем логические координаты)
+      const canvas = document.querySelector('canvas');
+      if (canvas) {
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / 800;
+        const scaleY = canvas.height / 600;
+        const physicalX = e.clientX - rect.left;
+        const physicalY = e.clientY - rect.top;
+        const logicalX = physicalX / scaleX;
+        const logicalY = physicalY / scaleY;
+        setLastMousePos({ x: logicalX, y: logicalY });
+      }
+    };
+    window.addEventListener('mousemove', handleMouseMoveGlobal);
+    return () => window.removeEventListener('mousemove', handleMouseMoveGlobal);
+  }, []);
+
+  const handlePaste = async (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    for (const item of items) {
+      if (item.type.indexOf('image') !== -1) {
+        const file = item.getAsFile();
+        if (!file) continue;
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          const dataUrl = event.target.result;
+          // Создаём элемент изображения на доске
+          const imgElement = {
+            type: 'image',
+            id: Date.now() + Math.random(),
+            dataUrl: dataUrl,          // base64
+            x: lastMousePos.x,
+            y: lastMousePos.y,
+            width: 200,                // начальная ширина (можно задать любую)
+            height: 200,               // будет скорректировано при отрисовке с сохранением пропорций
+          };
+          // Для сохранения пропорций при вставке можно загрузить изображение и вычислить реальные размеры
+          const tempImg = new Image();
+          tempImg.onload = () => {
+            const aspect = tempImg.width / tempImg.height;
+            const targetWidth = 200;
+            const targetHeight = targetWidth / aspect;
+            imgElement.width = targetWidth;
+            imgElement.height = targetHeight;
+            setElements(prev => [...prev, imgElement]);
+            sendElement(imgElement);
+          };
+          tempImg.src = dataUrl;
+        };
+        reader.readAsDataURL(file);
+        break; // берём только первое изображение
+      }
+    }
+  };
+
+  useEffect(() => {
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [lastMousePos]);
+
+
+
   if (!roomId || roomId === 'undefined' || roomId.length !== 36) {
     return (
       <div>
@@ -260,21 +332,20 @@ function Whiteboard() {
       }
       return;
     }
-
+    console.log('handleMouseDown, tool:', tool, 'editingText:', editingText);
     if (tool === 'text') {
-      const canvas = e.target;
-      const rect = canvas.getBoundingClientRect();
+      console.log('Text tool triggered, offsetX:', offsetX, 'offsetY:', offsetY, 'clientX:', e.clientX, 'clientY:', e.clientY);
       setEditingText({
-        x: offsetX,
+        x: offsetX,          // логические координаты для сохранения в элементе
         y: offsetY,
         value: '',
         existingId: null,
-        clientX: rect.left + offsetX * (rect.width / 800),
-        clientY: rect.top + offsetY * (rect.height / 600) - 16,
+        clientX: e.clientX,  // экранные координаты для позиционирования input
+        clientY: e.clientY - 16,  // немного выше курсора
       });
       return;
     }
-
+    console.log(editingText)
     if (tool === 'eraser') {
       setIsErasing(true);
       const index = findElementIndexAt(offsetX, offsetY);
@@ -481,13 +552,26 @@ function Whiteboard() {
         <p>Комната: {roomId}</p>
       </div>
       {latexResult && (
-        <div className="modal-overlay" onClick={() => setLatexResult(null)}>
+        <div className="modal-overlay">
           <div className="modal-content" onClick={e => e.stopPropagation()}>
             <h3>LaTeX-код доски</h3>
             <pre style={{ whiteSpace: 'pre-wrap', maxHeight: '400px', overflow: 'auto' }}>
               {latexResult}
             </pre>
-            <button onClick={() => setLatexResult(null)}>Закрыть</button>
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '16px' }}>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(latexResult);
+                  alert('Код скопирован в буфер обмена');
+                }}
+                className="copy-button"
+              >
+                📋 Копировать
+              </button>
+              <button onClick={() => setLatexResult(null)} className="close-button">
+                Закрыть
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -16,6 +16,8 @@ const WhiteboardCanvas = ({
 }) => {
   const canvasRef = useRef(null);
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
+  // Кеш для загруженных изображений (чтобы не создавать каждый раз)
+  const imageCache = useRef({});
 
   const updateCanvasSize = useCallback(() => {
     const canvas = canvasRef.current;
@@ -52,15 +54,12 @@ const WhiteboardCanvas = ({
 
     if (Array.isArray(elements)) elements.forEach(el => drawElement(ctx, el));
     if (previewElement) drawElement(ctx, previewElement);
-
-    // Отрисовка перетаскиваемого элемента со смещением
     if (draggedElement) {
       ctx.save();
       ctx.translate(dragOffset.x, dragOffset.y);
       drawElement(ctx, draggedElement);
       ctx.restore();
     }
-
     ctx.restore();
   };
 
@@ -130,7 +129,22 @@ const WhiteboardCanvas = ({
         ctx.fillStyle = el.color;
         ctx.fillText(el.text, el.x, el.y);
         break;
-      default: break;
+      case 'image':
+        let img = imageCache.current[el.id];
+        if (!img) {
+          img = new Image();
+          img.src = el.dataUrl;
+          imageCache.current[el.id] = img;
+        }
+        // Рисуем, если изображение загружено, иначе ожидаем загрузки
+        if (img.complete && img.naturalWidth > 0) {
+          ctx.drawImage(img, el.x, el.y, el.width, el.height);
+        } else {
+          img.onload = () => drawCanvas();
+        }
+        break;
+      default:
+        break;
     }
   };
 

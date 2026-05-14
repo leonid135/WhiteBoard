@@ -42,102 +42,114 @@ class WhiteboardViewSet(viewsets.ModelViewSet):
     queryset = Whiteboard.objects.all()
     serializer_class = WhiteboardSerializer
 
-
     @action(detail=True, methods=['post'])
     def convert_to_latex(self, request, pk=None):
         whiteboard = self.get_object()
         elements = whiteboard.get_board_data()
 
-        # Формируем подробное описание содержимого доски
+        # Функция для семплирования точек (оставляем каждую n-ю)
+        def sample_points(points, max_points=150):
+            if len(points) <= max_points:
+                return points
+            step = len(points) // max_points
+            return [points[i] for i in range(0, len(points), step)]
+
         description_lines = []
         for idx, el in enumerate(elements):
             typ = el.get('type')
             color = el.get('color', 'black')
             thickness = el.get('thickness', 1)
-            fill_color = el.get('fillColor', None)
+            fill = el.get('fillColor', None)
 
             if typ == 'text':
-                text = el.get('text', '')
                 x, y = el.get('x', 0), el.get('y', 0)
+                text = el.get('text', '')
                 description_lines.append(
-                    f"- Текст {idx}: '{text}' в координатах ({x},{y}), цвет {color}, размер шрифта {el.get('fontSize', 16)}"
+                    f"Text {idx}: '{text}' at ({x},{y}), color={color}, font size={el.get('fontSize', 16)}"
                 )
             elif typ == 'rectangle':
                 x, y = el.get('x', 0), el.get('y', 0)
                 w, h = el.get('width', 0), el.get('height', 0)
-                desc = f"- Прямоугольник {idx}: верхний левый угол ({x},{y}), ширина {w}, высота {h}, цвет линии {color}, толщина {thickness}"
-                if fill_color:
-                    desc += f", цвет заливки {fill_color}"
-                description_lines.append(desc)
+                line = f"Rectangle {idx}: top-left ({x},{y}), width={w}, height={h}, stroke={color}, thickness={thickness}"
+                if fill:
+                    line += f", fill={fill}"
+                description_lines.append(line)
             elif typ == 'circle':
                 cx, cy = el.get('cx', 0), el.get('cy', 0)
                 rx, ry = el.get('rx', 0), el.get('ry', 0)
-                desc = f"- Эллипс/круг {idx}: центр ({cx},{cy}), радиусы по X={rx}, по Y={ry}, цвет {color}, толщина {thickness}"
-                if fill_color:
-                    desc += f", заливка {fill_color}"
-                description_lines.append(desc)
+                line = f"Ellipse {idx}: center ({cx},{cy}), rx={rx}, ry={ry}, stroke={color}, thickness={thickness}"
+                if fill:
+                    line += f", fill={fill}"
+                description_lines.append(line)
             elif typ == 'line':
                 x1, y1 = el.get('x1', 0), el.get('y1', 0)
                 x2, y2 = el.get('x2', 0), el.get('y2', 0)
                 description_lines.append(
-                    f"- Линия {idx}: от ({x1},{y1}) до ({x2},{y2}), цвет {color}, толщина {thickness}"
-                )
+                    f"Line {idx}: ({x1},{y1}) to ({x2},{y2}), stroke={color}, thickness={thickness}")
             elif typ == 'arrow':
                 x1, y1 = el.get('x1', 0), el.get('y1', 0)
                 x2, y2 = el.get('x2', 0), el.get('y2', 0)
                 description_lines.append(
-                    f"- Стрелка {idx}: от ({x1},{y1}) до ({x2},{y2}), цвет {color}, толщина {thickness}"
-                )
+                    f"Arrow {idx}: ({x1},{y1}) to ({x2},{y2}), stroke={color}, thickness={thickness}")
             elif typ == 'triangle':
                 x1, y1 = el.get('x1', 0), el.get('y1', 0)
                 x2, y2 = el.get('x2', 0), el.get('y2', 0)
-                # Треугольник строится по точкам (x1,y1), (x2,y1), (x1,y2)
-                description_lines.append(
-                    f"- Треугольник {idx}: вершины ({x1},{y1}), ({x2},{y1}), ({x1},{y2}), цвет {color}, толщина {thickness}"
-                )
-                if fill_color:
-                    description_lines[-1] += f", заливка {fill_color}"
+                # треугольник: (x1,y1), (x2,y1), (x1,y2)
+                line = f"Triangle {idx}: vertices ({x1},{y1}), ({x2},{y1}), ({x1},{y2}), stroke={color}, thickness={thickness}"
+                if fill:
+                    line += f", fill={fill}"
+                description_lines.append(line)
             elif typ == 'pencil':
                 points = el.get('points', [])
                 if points:
-                    # Для карандаша отправляем только начальную и конечную точки, а также размер (для упрощения)
-                    first = points[0]
-                    last = points[-1]
+                    # Семплируем точки, чтобы не перегружать LLM
+                    sampled = sample_points(points, max_points=200)
+                    # Превращаем в строку: "x1 y1, x2 y2, ..."
+                    coords = ','.join(f"{int(p['x'])} {int(p['y'])}" for p in sampled)
                     description_lines.append(
-                        f"- Рисунок карандашом {idx}: примерно от ({first['x']},{first['y']}) до ({last['x']},{last['y']}), "
-                        f"состоит из {len(points)} точек, цвет {color}, толщина {thickness}"
+                        f"Pencil drawing {idx}: path of {len(points)} points (sampled to {len(sampled)}): {coords}, "
+                        f"stroke={color}, thickness={thickness}"
                     )
-            # Добавьте другие типы по необходимости
 
         if not description_lines:
-            description = "Доска пуста."
+            description = "The board is empty."
         else:
-            description = "На доске находятся следующие объекты:\n" + "\n".join(description_lines)
+            description = "The board contains the following objects:\n" + "\n".join(description_lines)
 
-        prompt = f"""Ты — эксперт по LaTeX и TikZ. Напиши LaTeX-документ, который точно воспроизводит содержимое доски, описанное ниже.
+        prompt = f"""You are an expert in LaTeX and TikZ. Generate a complete LaTeX document that accurately reproduces the whiteboard described below.
 
-            {description}
+    {description}
 
-            Требования:
-            - Используй класс article и пакет tikz.
-            - Помести все рисунки в окружение tikzpicture с координатами от (0,0) до (800,600) (масштабировать можно через scale, но лучше использовать абсолютные координаты).
-            - Для текста используй узлы (node) с позицией (x,y).
-            - Линии, прямоугольники, круги, стрелки, треугольники рисуй соответствующими командами TikZ.
-            - Пиксельные рисунки карандашом заменяй схематичным изображением (например, соедини начальную и конечную точки волнистой линией или просто укажи, что это набросок).
-            - Цвета и толщину линий соблюдай.
-            - Выдай ТОЛЬКО полный код документа без дополнительных пояснений (начинай с \documentclass)."""
+    Requirements:
+    - Use \\documentclass{{article}} and include the tikz package.
+    - Place all drawings inside a single tikzpicture environment.
+    - Use absolute coordinates (x,y) in points (pt), with the canvas ranging from (0,0) to (800,600).
+    - For lines, use \\draw or \\draw[->] for arrows. For filled shapes, use \\filldraw.
+    - For the pencil drawings, connect the given points in order using a \\draw command with line join=round.
+    - Preserve colors and line thicknesses.
+    - Output ONLY the LaTeX code, starting with \\documentclass. Do not add any extra text.
+
+    Example format:
+    \\documentclass{{article}}
+    \\usepackage{{tikz}}
+    \\begin{{document}}
+    \\begin{{tikzpicture}}[x=1pt,y=1pt,yscale=-1]
+      % your commands here
+    \\end{{tikzpicture}}
+    \\end{{document}}"""
 
         try:
             client = Groq(api_key=settings.GROQ_API_KEY)
             response = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.2
+                temperature=0.2,
+                max_tokens=4096  # чтобы поместился длинный путь
             )
             latex_code = response.choices[0].message.content
             return Response({'latex': latex_code})
         except Exception as e:
-            return Response({'error': f'Ошибка Groq API: {e}'}, status=500)
+            return Response({'error': f'Groq API error: {e}'}, status=500)
 
     @action(detail=True, methods=['get'])
     def export_pdf(self, request, pk=None):

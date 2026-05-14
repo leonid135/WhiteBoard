@@ -397,3 +397,21 @@ canvas:hover {
 .modal-content button:hover {
   background: #1e40af;
 }
+
+.copy-button, .close-button {
+  background: #2b6eff;
+  border: none;
+  padding: 8px 24px;
+  border-radius: 40px;
+  color: white;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+.copy-button:hover, .close-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 0 8px rgba(43,110,255,0.5);
+}
+.close-button {
+  background: #6c757d;
+}
