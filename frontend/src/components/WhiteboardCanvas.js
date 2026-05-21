@@ -60,28 +60,48 @@ const WhiteboardCanvas = ({
       ctx.restore();
     }
 
-    // Draw selection rectangle and resize handles for selected image
+    // Draw selection rectangle and resize handles for selected element (image or text)
     if (selectedElementId) {
       const selected = elements.find(el => el.id === selectedElementId);
-      if (selected && selected.type === 'image') {
+      if (selected) {
+        const isText = selected.type === 'text';
+        let w, h, x, y;
+        if (isText) {
+          w = selected.width || (selected.text?.length * 12) || 80;
+          h = selected.height || 24;
+          x = selected.x;
+          y = selected.y - h;   // ключевое исправление: рамка над текстом
+        } else {
+          w = selected.width;
+          h = selected.height;
+          x = selected.x;
+          y = selected.y;
+        }
         ctx.save();
         ctx.strokeStyle = '#2b6eff';
         ctx.lineWidth = 2;
         ctx.setLineDash([6, 6]);
-        ctx.strokeRect(selected.x, selected.y, selected.width, selected.height);
+        ctx.strokeRect(x, y, w, h);
         ctx.setLineDash([]);
         const markerSize = 8;
         const corners = [
-          [selected.x, selected.y],
-          [selected.x + selected.width, selected.y],
-          [selected.x, selected.y + selected.height],
-          [selected.x + selected.width, selected.y + selected.height],
+          { x: x, y: y, corner: 'tl' },
+          { x: x + w, y: y, corner: 'tr' },
+          { x: x, y: y + h, corner: 'bl' },
+          { x: x + w, y: y + h, corner: 'br' },
         ];
         ctx.fillStyle = '#ffffff';
         ctx.shadowBlur = 0;
-        for (const [x, y] of corners) {
-          ctx.fillRect(x - markerSize/2, y - markerSize/2, markerSize, markerSize);
-          ctx.strokeRect(x - markerSize/2, y - markerSize/2, markerSize, markerSize);
+        for (const corner of corners) {
+          const cx = corner.x;
+          const cy = corner.y;
+          ctx.fillRect(cx - markerSize/2, cy - markerSize/2, markerSize, markerSize);
+          ctx.strokeRect(cx - markerSize/2, cy - markerSize/2, markerSize, markerSize);
+          if (corner.corner === 'bl') {
+            ctx.fillStyle = '#2b6eff';
+            ctx.fillRect(cx - markerSize/2, cy - markerSize/2, markerSize, markerSize);
+            ctx.fillStyle = '#ffffff';
+          }
         }
         ctx.restore();
       }

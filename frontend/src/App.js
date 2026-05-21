@@ -72,6 +72,8 @@ function Whiteboard() {
   useEffect(() => { colorRef.current = color; }, [color]);
   useEffect(() => { thicknessRef.current = thickness; }, [thickness]);
 
+  const [editingTextId, setEditingTextId] = useState(null);
+  const [editingTextValue, setEditingTextValue] = useState('');
   // --------------------------------------------------------------------
   // Paste image from clipboard
   // --------------------------------------------------------------------
@@ -304,9 +306,9 @@ Example format:
           if (Math.abs(dx) <= rx && Math.abs(dy) <= ry) return i;
           break;
         case 'text': {
-          const textWidth = (el.text?.length * 12) || 80;
-          const textHeight = 24;
-          if (x >= el.x - 10 && x <= el.x + textWidth + 10 && y >= el.y - textHeight && y <= el.y + 10) return i;
+          const w = el.width || (el.text?.length * 12) || 80;
+          const h = el.height || 24;
+          if (x >= el.x && x <= el.x + w && y >= el.y - h && y <= el.y) return i;
           break;
         }
         case 'image':
@@ -363,17 +365,22 @@ Example format:
 
     // --- Select tool (cursor) ---
     if (tool === 'select') {
-      // Check if we are over a resize handle of a selected image
+      // Check if we are over a resize handle of a selected image or text
       let resizing = false;
       if (selectedElementId) {
         const selectedEl = elements.find(el => el.id === selectedElementId);
-        if (selectedEl && selectedEl.type === 'image') {
+        if (selectedEl && (selectedEl.type === 'image' || selectedEl.type === 'text')) {
+          const isText = selectedEl.type === 'text';
+          const w = isText ? (selectedEl.text?.length * 12) || 80 : selectedEl.width;
+          const h = isText ? 24 : selectedEl.height;
+          const x = selectedEl.x;
+          const y = selectedEl.y;
           const markerSize = 10;
           const corners = [
-            { x: selectedEl.x, y: selectedEl.y, corner: 'tl' },
-            { x: selectedEl.x + selectedEl.width, y: selectedEl.y, corner: 'tr' },
-            { x: selectedEl.x, y: selectedEl.y + selectedEl.height, corner: 'bl' },
-            { x: selectedEl.x + selectedEl.width, y: selectedEl.y + selectedEl.height, corner: 'br' }
+            { x: x, y: y, corner: 'tl' },
+            { x: x + w, y: y, corner: 'tr' },
+            { x: x, y: y + h, corner: 'bl' },
+            { x: x + w, y: y + h, corner: 'br' }
           ];
           for (const c of corners) {
             if (Math.hypot(offsetX - c.x, offsetY - c.y) < markerSize) {
@@ -381,8 +388,9 @@ Example format:
                 element: selectedEl,
                 startX: offsetX,
                 startY: offsetY,
-                originalWidth: selectedEl.width,
-                originalHeight: selectedEl.height,
+                originalWidth: w,
+                originalHeight: h,
+                originalFontSize: selectedEl.fontSize,
                 corner: c.corner,
               });
               resizing = true;
@@ -420,16 +428,10 @@ Example format:
       return;
     }
 
-    // --- Text tool (inline) ---
+    // --- Text tool (modal) ---
     if (tool === 'text') {
-      setEditingText({
-        x: offsetX,
-        y: offsetY,
-        value: '',
-        existingId: null,
-        clientX: e.clientX,
-        clientY: e.clientY - 16,
-      });
+      setTextPosition({ x: offsetX, y: offsetY });
+      setTextToolVisible(true);
       return;
     }
 
@@ -473,28 +475,49 @@ Example format:
       if (resizingElement) {
         const deltaX = offsetX - resizingElement.startX;
         const deltaY = offsetY - resizingElement.startY;
-        let newWidth = resizingElement.originalWidth;
-        let newHeight = resizingElement.originalHeight;
-        if (resizingElement.corner === 'br') {
-          newWidth = resizingElement.originalWidth + deltaX;
-          newHeight = resizingElement.originalHeight + deltaY;
-        } else if (resizingElement.corner === 'tl') {
-          newWidth = resizingElement.originalWidth - deltaX;
-          newHeight = resizingElement.originalHeight - deltaY;
+        const el = resizingElement.element;
+        if (el.type === 'image') {
+          let newWidth = resizingElement.originalWidth;
+          let newHeight = resizingElement.originalHeight;
+          if (resizingElement.corner === 'br') {
+            newWidth = resizingElement.originalWidth + deltaX;
+            newHeight = resizingElement.originalHeight + deltaY;
+          } else if (resizingElement.corner === 'tl') {
+            newWidth = resizingElement.originalWidth - deltaX;
+            newHeight = resizingElement.originalHeight - deltaY;
+          }
+          newWidth = Math.max(20, newWidth);
+          newHeight = Math.max(20, newHeight);
+          const updated = { ...el, width: newWidth, height: newHeight };
+          setElements(prev => prev.map(e => e.id === updated.id ? updated : e));
+          sendUpdate(updated);
+          setResizingElement(prev => ({
+            ...prev,
+            startX: offsetX,
+            startY: offsetY,
+            originalWidth: newWidth,
+            originalHeight: newHeight,
+          }));
+        } else if (el.type === 'text') {
+          const delta = (resizingElement.corner === 'br') ? deltaX : -deltaX;
+          const newFontSize = Math.max(8, resizingElement.originalFontSize + delta / 5);
+          // Пересчёт ширины текста
+          const tempCanvas = document.createElement('canvas');
+          const tempCtx = tempCanvas.getContext('2d');
+          tempCtx.font = `${newFontSize}px Arial`;
+          const metrics = tempCtx.measureText(el.text);
+          const newWidth = metrics.width;
+          const newHeight = newFontSize * 1.2;
+          const updated = { ...el, fontSize: newFontSize, width: newWidth, height: newHeight };
+          setElements(prev => prev.map(e => e.id === updated.id ? updated : e));
+          sendUpdate(updated);
+          setResizingElement(prev => ({
+            ...prev,
+            startX: offsetX,
+            startY: offsetY,
+            originalFontSize: newFontSize,
+          }));
         }
-        // Add other corners if needed
-        newWidth = Math.max(20, newWidth);
-        newHeight = Math.max(20, newHeight);
-        const updated = { ...resizingElement.element, width: newWidth, height: newHeight };
-        setElements(prev => prev.map(el => el.id === updated.id ? updated : el));
-        sendUpdate(updated);
-        setResizingElement(prev => ({
-          ...prev,
-          startX: offsetX,
-          startY: offsetY,
-          originalWidth: newWidth,
-          originalHeight: newHeight,
-        }));
         return;
       } else if (draggedElement) {
         const deltaX = offsetX - dragStartPos.x;
@@ -556,35 +579,61 @@ Example format:
   };
 
   // --------------------------------------------------------------------
-  // Text editing helpers
+  // Text modal helpers
   // --------------------------------------------------------------------
-  const finishTextEditing = () => {
-    if (!editingText) return;
-    const { x, y, value, existingId } = editingText;
-    if (value.trim()) {
-      if (existingId === null) {
+  const [textToolVisible, setTextToolVisible] = useState(false);
+  const [textPosition, setTextPosition] = useState({ x: 0, y: 0 });
+
+  const handleTextConfirm = (text) => {
+    if (text.trim()) {
+      if (editingTextId) {
+        // Редактирование существующего текста
+        const existing = elements.find(el => el.id === editingTextId);
+        if (existing) {
+          const updatedText = { ...existing, text: text };
+          // Пересчитываем ширину и высоту (шрифт остаётся прежним)
+          const tempCanvas = document.createElement('canvas');
+          const tempCtx = tempCanvas.getContext('2d');
+          const fontSize = existing.fontSize || 16;
+          tempCtx.font = `${fontSize}px Arial`;
+          const metrics = tempCtx.measureText(text);
+          updatedText.width = metrics.width;
+          updatedText.height = fontSize * 1.2;
+          setElements(prev => prev.map(el => el.id === editingTextId ? updatedText : el));
+          sendUpdate(updatedText);
+        }
+      } else {
+        // Создание нового текста
+        const tempCanvas = document.createElement('canvas');
+        const tempCtx = tempCanvas.getContext('2d');
+        tempCtx.font = `16px Arial`;
+        const metrics = tempCtx.measureText(text);
+        const textWidth = metrics.width;
+        const textHeight = 16 * 1.2;
         const newText = {
           type: 'text',
-          x, y,
-          text: value,
+          x: textPosition.x,
+          y: textPosition.y,
+          text: text,
           color: colorRef.current,
           fontSize: 16,
+          width: textWidth,
+          height: textHeight,
           id: Date.now() + Math.random(),
         };
         setElements(prev => [...prev, newText]);
         sendElement(newText);
-      } else {
-        const updatedText = { ...elements.find(el => el.id === existingId), text: value, color: colorRef.current };
-        setElements(prev => prev.map(el => el.id === existingId ? updatedText : el));
-        sendUpdate(updatedText);
       }
     }
-    setEditingText(null);
+    setTextToolVisible(false);
+    setEditingTextId(null);
+    setEditingTextValue('');
   };
 
-  const handleTextKeyDown = (e) => {
-    if (e.key === 'Enter') finishTextEditing();
-    else if (e.key === 'Escape') setEditingText(null);
+  const handleTextCancel = () => {
+    setTextToolVisible(false);
+    setEditingTextId(null);
+    setEditingTextValue('')
   };
 
   // --------------------------------------------------------------------
@@ -606,21 +655,17 @@ Example format:
   const handleWheel = (e, logicalX, logicalY) => zoomRelativeToPoint(e.deltaY > 0 ? -0.1 : 0.1, logicalX, logicalY);
 
   // --------------------------------------------------------------------
-  // Double click to edit text
+  // Double click to edit text (optional, but we use modal anyway)
   // --------------------------------------------------------------------
   const handleDoubleClick = (e) => {
     const { offsetX, offsetY } = e;
     const index = findElementIndexAt(offsetX, offsetY);
     if (index !== -1 && elements[index].type === 'text') {
       const textElement = elements[index];
-      setEditingText({
-        x: textElement.x,
-        y: textElement.y,
-        value: textElement.text,
-        existingId: textElement.id,
-        clientX: e.clientX,
-        clientY: e.clientY - 16,
-      });
+      setEditingTextId(textElement.id);
+      setEditingTextValue(textElement.text);
+      setTextPosition({ x: textElement.x, y: textElement.y });
+      setTextToolVisible(true);
     }
   };
 
@@ -668,26 +713,27 @@ Example format:
           dragOffset={dragOffset}
           selectedElementId={selectedElementId}
         />
-        {editingText && (
-          <input
-            type="text"
-            className="inline-text-input"
-            style={{
-              position: 'fixed',
-              left: editingText.clientX,
-              top: editingText.clientY,
-              fontFamily: 'Arial',
-              fontSize: '16px',
-              border: '1px solid #ccc',
-              background: 'white',
-              zIndex: 1000,
-            }}
-            value={editingText.value}
-            onChange={(e) => setEditingText({ ...editingText, value: e.target.value })}
-            onBlur={finishTextEditing}
-            onKeyDown={handleTextKeyDown}
-            autoFocus
-          />
+        {textToolVisible && (
+          <div className="modal-overlay">
+            <div className="modal-content" onClick={e => e.stopPropagation()}>
+              <h3>{editingTextId ? 'Редактировать текст' : 'Введите текст'}</h3>
+              <input
+                type="text"
+                id="text-input-field"
+                style={{ width: '100%', padding: '8px', marginBottom: '16px' }}
+                defaultValue={editingTextValue}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleTextConfirm(e.target.value); }}
+                autoFocus
+              />
+              <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+                <button onClick={() => {
+                  const input = document.getElementById('text-input-field');
+                  handleTextConfirm(input?.value || '');
+                }}>OK</button>
+                <button onClick={handleTextCancel}>Отмена</button>
+              </div>
+            </div>
+          </div>
         )}
       </div>
       <div className="room-info">
