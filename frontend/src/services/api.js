@@ -18,3 +18,7 @@ export const exportPDF = async (id) => {
   window.open(`${API_BASE}/whiteboards/${id}/export_pdf/`);
 };
 export const API_BASE = 'http://localhost:8000/api';
+
+export const exportLatexWithImages = async (id) => {
+  window.open(`${API_BASE}/whiteboards/${id}/export_latex_with_images/`);
+};

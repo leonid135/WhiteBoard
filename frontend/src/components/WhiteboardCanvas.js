@@ -60,7 +60,7 @@ const WhiteboardCanvas = ({
       ctx.restore();
     }
 
-    // Draw selection rectangle and resize handles for selected element (image or text)
+    // Отрисовка рамки выбора и маркеров
     if (selectedElementId) {
       const selected = elements.find(el => el.id === selectedElementId);
       if (selected) {
@@ -70,7 +70,7 @@ const WhiteboardCanvas = ({
           w = selected.width || (selected.text?.length * 12) || 80;
           h = selected.height || 24;
           x = selected.x;
-          y = selected.y - h;   // ключевое исправление: рамка над текстом
+          y = selected.y - h;
         } else {
           w = selected.width;
           h = selected.height;
@@ -91,17 +91,11 @@ const WhiteboardCanvas = ({
           { x: x + w, y: y + h, corner: 'br' },
         ];
         ctx.fillStyle = '#ffffff';
-        ctx.shadowBlur = 0;
         for (const corner of corners) {
           const cx = corner.x;
           const cy = corner.y;
           ctx.fillRect(cx - markerSize/2, cy - markerSize/2, markerSize, markerSize);
           ctx.strokeRect(cx - markerSize/2, cy - markerSize/2, markerSize, markerSize);
-          if (corner.corner === 'bl') {
-            ctx.fillStyle = '#2b6eff';
-            ctx.fillRect(cx - markerSize/2, cy - markerSize/2, markerSize, markerSize);
-            ctx.fillStyle = '#ffffff';
-          }
         }
         ctx.restore();
       }
@@ -150,10 +144,11 @@ const WhiteboardCanvas = ({
         ctx.stroke();
         const angle = Math.atan2(el.y2 - el.y1, el.x2 - el.x1);
         const arrowSize = 10 + (el.thickness || 3);
-        const x3 = el.x2 - arrowSize * Math.cos(angle - Math.PI/6);
-        const y3 = el.y2 - arrowSize * Math.sin(angle - Math.PI/6);
-        const x4 = el.x2 - arrowSize * Math.cos(angle + Math.PI/6);
-        const y4 = el.y2 - arrowSize * Math.sin(angle + Math.PI/6);
+        const arrowAngle = Math.PI / 8;
+        const x3 = el.x2 - arrowSize * Math.cos(angle - arrowAngle);
+        const y3 = el.y2 - arrowSize * Math.sin(angle - arrowAngle);
+        const x4 = el.x2 - arrowSize * Math.cos(angle + arrowAngle);
+        const y4 = el.y2 - arrowSize * Math.sin(angle + arrowAngle);
         ctx.beginPath();
         ctx.moveTo(el.x2, el.y2);
         ctx.lineTo(x3, y3);
@@ -176,7 +171,7 @@ const WhiteboardCanvas = ({
         ctx.fillStyle = el.color;
         ctx.fillText(el.text, el.x, el.y);
         break;
-      case 'image': {
+      case 'image':
         let img = imageCache.current[el.id];
         if (!img) {
           img = new Image();
@@ -189,7 +184,6 @@ const WhiteboardCanvas = ({
           img.onload = () => drawCanvas();
         }
         break;
-      }
       default: break;
     }
   };
@@ -224,19 +218,18 @@ const WhiteboardCanvas = ({
     handler(syntheticEvent);
   };
 
+  // Обработчик колесика мыши (zoom)
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas || !onWheel) return;
     const wheelHandler = (e) => {
-      if (onWheel) {
-        e.preventDefault();
-        const coords = getLogicalCoords(e);
-        onWheel(e, coords.offsetX, coords.offsetY);
-      }
+      e.preventDefault();
+      const coords = getLogicalCoords(e);
+      onWheel(e, coords.offsetX, coords.offsetY);
     };
     canvas.addEventListener('wheel', wheelHandler, { passive: false });
     return () => canvas.removeEventListener('wheel', wheelHandler);
-  }, [onWheel]);
+  }, [onWheel, pan, scale]);
 
   useEffect(() => {
     drawCanvas();
@@ -249,6 +242,7 @@ const WhiteboardCanvas = ({
       onMouseMove={(e) => adaptEvent(e, onMouseMove)}
       onMouseUp={(e) => adaptEvent(e, onMouseUp)}
       onDoubleClick={(e) => adaptEvent(e, onDoubleClick)}
+      onContextMenu={(e) => e.preventDefault()}
     />
   );
 };

@@ -4,10 +4,8 @@ import { BrowserRouter as Router, Routes, Route, useParams } from 'react-router-
 import Toolbar from './components/Toolbar';
 import WhiteboardCanvas from './components/WhiteboardCanvas';
 import WhiteboardWebSocket from './services/websocket';
-import { createSession, exportPDF } from './services/api';
-import { API_BASE } from './services/api';
+import { createSession, exportPDF, exportLatexWithImages } from './services/api';
 import './App.css';
-
 // ----------------------------------------------------------------------
 // Home component
 // ----------------------------------------------------------------------
@@ -45,7 +43,8 @@ function Whiteboard() {
   const [thickness, setThickness] = useState(3);
   const [isErasing, setIsErasing] = useState(false);
   const wsRef = useRef(null);
-
+  const [isPanning, setIsPanning] = useState(false);
+  const [panStart, setPanStart] = useState({ x: 0, y: 0 });
   // Zoom and pan
   const [scale, setScale] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -133,124 +132,9 @@ function Whiteboard() {
     window.addEventListener('paste', handlePaste);
     return () => window.removeEventListener('paste', handlePaste);
   }, [lastMousePos]);
-
   // --------------------------------------------------------------------
-  // WebSocket connection and helpers
-  // --------------------------------------------------------------------
-  useEffect(() => {
-    const ws = new WhiteboardWebSocket(roomId, (data) => {
-      if (data.type === 'init') setElements(data.data || []);
-      else if (data.type === 'draw') {
-        if (data.element) setElements(prev => [...prev, data.element]);
-        if (data.elements) setElements(data.elements);
-      } else if (data.type === 'clear') setElements([]);
-      else if (data.type === 'delete') setElements(prev => prev.filter(el => el.id !== data.elementId));
-      else if (data.type === 'update') setElements(prev => prev.map(el => el.id === data.element.id ? data.element : el));
-    });
-    wsRef.current = ws;
-    createSession(roomId).then(sessionData => console.log('Session created', sessionData));
-    return () => ws.close();
-  }, [roomId]);
-
-  const sendElement = (element) => wsRef.current?.send({ type: 'draw', element });
-  const sendUpdate = (element) => wsRef.current?.send({ type: 'update', element });
-
-  const handleClear = () => {
-    setElements([]);
-    wsRef.current?.send({ type: 'clear' });
-  };
-
-  const handleSave = () => {
-    const canvas = document.querySelector('canvas');
-    const link = document.createElement('a');
-    link.download = 'whiteboard.png';
-    link.href = canvas.toDataURL();
-    link.click();
-  };
-
-  const handleExportPDF = () => exportPDF(roomId);
-
-  // --------------------------------------------------------------------
-  // LaTeX generation via Groq API (using elements, not image)
-  // --------------------------------------------------------------------
-  const handleLatex = async () => {
-    try {
-      // Build description of all elements (same as before)
-      const descriptionLines = [];
-      for (let idx = 0; idx < elements.length; idx++) {
-        const el = elements[idx];
-        const typ = el.type;
-        const color = el.color || 'black';
-        const thick = el.thickness || 1;
-        const fill = el.fillColor || null;
-        if (typ === 'text') {
-          descriptionLines.push(`Text ${idx}: "${el.text}" at (${el.x},${el.y}), color=${color}, font size=${el.fontSize || 16}`);
-        } else if (typ === 'rectangle') {
-          let line = `Rectangle ${idx}: top-left (${el.x},${el.y}), width=${el.width}, height=${el.height}, stroke=${color}, thickness=${thick}`;
-          if (fill) line += `, fill=${fill}`;
-          descriptionLines.push(line);
-        } else if (typ === 'circle') {
-          let line = `Ellipse ${idx}: center (${el.cx},${el.cy}), rx=${el.rx}, ry=${el.ry}, stroke=${color}, thickness=${thick}`;
-          if (fill) line += `, fill=${fill}`;
-          descriptionLines.push(line);
-        } else if (typ === 'line') {
-          descriptionLines.push(`Line ${idx}: (${el.x1},${el.y1}) to (${el.x2},${el.y2}), stroke=${color}, thickness=${thick}`);
-        } else if (typ === 'arrow') {
-          descriptionLines.push(`Arrow ${idx}: (${el.x1},${el.y1}) to (${el.x2},${el.y2}), stroke=${color}, thickness=${thick}`);
-        } else if (typ === 'triangle') {
-          let line = `Triangle ${idx}: vertices (${el.x1},${el.y1}), (${el.x2},${el.y1}), (${el.x1},${el.y2}), stroke=${color}, thickness=${thick}`;
-          if (fill) line += `, fill=${fill}`;
-          descriptionLines.push(line);
-        } else if (typ === 'pencil') {
-          const points = el.points || [];
-          if (points.length) {
-            const first = points[0];
-            const last = points[points.length-1];
-            descriptionLines.push(`Pencil drawing ${idx}: approx from (${first.x},${first.y}) to (${last.x},${last.y}), ${points.length} points, stroke=${color}, thickness=${thick}`);
-          }
-        } else if (typ === 'image') {
-          descriptionLines.push(`Image ${idx}: at (${el.x},${el.y}), size ${el.width}x${el.height}`);
-        }
-      }
-      const description = descriptionLines.length ? "The board contains:\n" + descriptionLines.join("\n") : "The board is empty.";
-      const prompt = `You are an expert in LaTeX and TikZ. Generate a complete LaTeX document that accurately reproduces the whiteboard described below.
-
-${description}
-
-Requirements:
-- Use \\documentclass{article} and include the tikz package.
-- Place all drawings inside a single tikzpicture environment.
-- Use absolute coordinates (x,y) in points (pt), with the canvas ranging from (0,0) to (800,600).
-- For lines, use \\draw or \\draw[->] for arrows. For filled shapes, use \\filldraw.
-- For pencil drawings, approximate the shape (e.g., a simple curve).
-- Output ONLY the LaTeX code, starting with \\documentclass. Do not add any extra text.
-
-Example format:
-\\documentclass{article}
-\\usepackage{tikz}
-\\begin{document}
-\\begin{tikzpicture}[x=1pt,y=1pt,yscale=-1]
-  % commands
-\\end{tikzpicture}
-\\end{document}`;
-
-      const response = await fetch(`${API_BASE}/whiteboards/${roomId}/convert_to_latex/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt })
-      });
-      const data = await response.json();
-      if (data.latex) setLatexResult(data.latex);
-      else alert('Ошибка: ' + (data.error || 'Неизвестная ошибка'));
-    } catch (err) {
-      console.error(err);
-      alert('Ошибка при запросе к серверу');
-    }
-  };
-
-  // --------------------------------------------------------------------
-  // Geometry helpers (selection, eraser, fill)
-  // --------------------------------------------------------------------
+// Geometry helpers (selection, eraser, fill)
+// --------------------------------------------------------------------
   const distanceToSegment = (x, y, x1, y1, x2, y2) => {
     const dx = x2 - x1;
     const dy = y2 - y1;
@@ -320,9 +204,6 @@ Example format:
     return -1;
   };
 
-  // --------------------------------------------------------------------
-  // Element position update for drag
-  // --------------------------------------------------------------------
   const updateElementPosition = (element, deltaX, deltaY) => {
     const updated = { ...element };
     switch (element.type) {
@@ -355,12 +236,60 @@ Example format:
     }
     return updated;
   };
+  // --------------------------------------------------------------------
+  // WebSocket connection and helpers
+  // --------------------------------------------------------------------
+  useEffect(() => {
+    const ws = new WhiteboardWebSocket(roomId, (data) => {
+      if (data.type === 'init') setElements(data.data || []);
+      else if (data.type === 'draw') {
+        if (data.element) setElements(prev => [...prev, data.element]);
+        if (data.elements) setElements(data.elements);
+      } else if (data.type === 'clear') setElements([]);
+      else if (data.type === 'delete') setElements(prev => prev.filter(el => el.id !== data.elementId));
+      else if (data.type === 'update') setElements(prev => prev.map(el => el.id === data.element.id ? data.element : el));
+    });
+    wsRef.current = ws;
+    createSession(roomId).then(sessionData => console.log('Session created', sessionData));
+    return () => ws.close();
+  }, [roomId]);
+
+  const sendElement = (element) => wsRef.current?.send({ type: 'draw', element });
+  const sendUpdate = (element) => wsRef.current?.send({ type: 'update', element });
+
+  const handleClear = () => {
+    setElements([]);
+    wsRef.current?.send({ type: 'clear' });
+  };
+
+  const handleSave = () => {
+    const canvas = document.querySelector('canvas');
+    const link = document.createElement('a');
+    link.download = 'whiteboard.png';
+    link.href = canvas.toDataURL();
+    link.click();
+  };
+
+  const handleExportPDF = () => exportPDF(roomId);
+
+  // --------------------------------------------------------------------
+  // LaTeX generation via Groq API (using elements, not image)
+  // --------------------------------------------------------------------
+  const handleLatex = () => {
+  exportLatexWithImages(roomId);
+  };
 
   // --------------------------------------------------------------------
   // Mouse event handlers (drawing, selection, resize, etc.)
   // --------------------------------------------------------------------
   const handleMouseDown = (e) => {
     if (editingText) return;
+    if (e.button === 2) {
+      e.preventDefault(); // отключаем контекстное меню браузера
+      setIsPanning(true);
+      setPanStart({ x: e.clientX, y: e.clientY });
+      return;
+    }
     const { offsetX, offsetY } = e;
 
     // --- Select tool (cursor) ---
@@ -467,6 +396,13 @@ Example format:
 
   const handleMouseMove = (e) => {
     if (editingText) return;
+    if (isPanning) {
+      const dx = e.clientX - panStart.x;
+      const dy = e.clientY - panStart.y;
+      setPan(prev => ({ x: prev.x + dx, y: prev.y + dy }));
+      setPanStart({ x: e.clientX, y: e.clientY });
+      return;
+    }
     const { offsetX, offsetY } = e;
     lastMouseCoordsRef.current = { x: offsetX, y: offsetY };
 
@@ -553,6 +489,10 @@ Example format:
 
   const handleMouseUp = () => {
     if (editingText) return;
+    if (isPanning) {
+      setIsPanning(false);
+      return;
+    }
     if (tool === 'select') {
       if (resizingElement) {
         setResizingElement(null);
